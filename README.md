@@ -79,6 +79,63 @@ uv run clicker-inspect "any goal"                    # capture + annotated dump
 
 **Stop a live run:** Ctrl-C, or slam the pointer into the **top-left corner** (same abort as macOS).
 
+
+
+## Your browsers (not a separate automation browser)
+
+The Hyprland adapter drives **whatever you already use** — Firefox, Zen, Chromium, Chrome, Brave, Vivaldi, Edge.
+
+| Action | What it does |
+|---|---|
+| Focus | `hyprctl` finds an open window by class and focuses it |
+| Open URL | `exec <your-browser> <url>` so the tab opens in **that profile** |
+| Read URL | Chromium-family via CDP; Firefox/Chromium also via AT-SPI address bar |
+
+Set the browser:
+
+```bash
+export CLICKER_BROWSER=google-chrome   # or chrome, firefox, chromium, brave, zen, …
+```
+
+If unset on Linux, it auto-picks the first installed browser from that list.
+
+
+### NixOS Chrome tip
+
+```nix
+# home.packages / environment.systemPackages
+pkgs.google-chrome
+# or unfree: pkgs.google-chrome
+```
+
+Launch with debugging so TypeSafe can read the active tab URL (same profile):
+
+```bash
+google-chrome-stable --remote-debugging-port=9222
+# CLICKER_BROWSER=google-chrome   # or just "chrome"
+```
+
+### Read the active tab URL (Chrome / Chromium / Brave)
+
+CDP needs a debugging port on **your existing profile** (not a throwaway one):
+
+```bash
+# one-shot (keeps default profile)
+google-chrome-stable --remote-debugging-port=9222
+# or: chromium --remote-debugging-port=9222
+```
+
+NixOS / Hyprland bind example:
+
+```bash
+# hyprland.conf
+bind = $mainMod, B, exec, google-chrome-stable --remote-debugging-port=9222
+```
+
+Optional: `export CLICKER_CDP_PORT=9222`
+
+Firefox URL reads go through AT-SPI (install `at-spi2-core` / enable accessibility). No separate Firefox profile required.
+
 ## Layout
 
 ```

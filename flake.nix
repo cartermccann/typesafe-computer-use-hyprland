@@ -19,6 +19,7 @@
               tesseract
               ydotool
               wtype
+              at-spi2-core
               # hyprctl comes from a Hyprland session; include CLI helpers if needed:
               hyprland
             ];

@@ -12,7 +12,7 @@ DEFAULT_MIN_CONFIDENCE = 0.4
 DEFAULT_STEPS = 12
 DEFAULT_DELAY = 2.0
 DEFAULT_WRITER_MODEL = "claude-haiku-4-5"
-DEFAULT_BROWSER = "Google Chrome"
+DEFAULT_BROWSER = "google-chrome"  # Linux/Hyprland; override with CLICKER_BROWSER=firefox etc.
 
 # Sites the classifier can pick by name. Anything else goes through the writer.
 SITES: dict[str, str] = {
@@ -40,7 +40,17 @@ def load_dotenv(path: Path) -> None:
 
 
 def browser() -> str:
-    return os.environ.get("CLICKER_BROWSER", DEFAULT_BROWSER)
+    """Preferred browser name. On Linux, auto-picks an installed browser if unset."""
+    env = os.environ.get("CLICKER_BROWSER")
+    if env:
+        return env
+    if os.name != "posix" or "darwin" in __import__("sys").platform:
+        return DEFAULT_BROWSER
+    try:
+        from .browsers import auto_default
+        return auto_default()
+    except Exception:
+        return DEFAULT_BROWSER
 
 
 def writer_model() -> str:
