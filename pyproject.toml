@@ -1,6 +1,6 @@
 [project]
 name = "typesafe-computer-use"
-version = "0.1.0-hyprland"
+version = "0.1.0+hyprland"
 description = "Cheap, fast computer use: deterministic screen state + TypeSafe Jev decisions. Hyprland/Linux port of awlevin/typesafe-computer-use."
 readme = "README.md"
 license = "MIT"
@@ -31,6 +31,7 @@ macos = [
 ]
 hyprland = [
     "pytesseract>=0.3.10",
+    "mcp>=1.0.0",
 ]
 
 [project.urls]

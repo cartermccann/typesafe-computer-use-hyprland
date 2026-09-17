@@ -14,6 +14,8 @@ This module does the full Mac loop on Linux:
 from __future__ import annotations
 
 import json
+import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -24,9 +26,27 @@ from pathlib import Path
 
 from PIL import Image
 
+from . import browsers as browser_catalog
 from .config import ABORT_CORNER_PX
 from .models import Abort, Field
-from . import browsers as browser_catalog
+
+# NixOS dictation / system ydotoold listens here (see ~/dotfiles/modules/dictation.nix).
+_YDOTOOL_SOCKET_DEFAULTS = (
+    "/run/ydotoold/socket",
+    "/run/user/%s/.ydotool_socket",
+)
+
+
+def _ensure_ydotool_socket() -> None:
+    """Point ydotool at the system daemon if the caller didn't set YDOTOOL_SOCKET."""
+    if os.environ.get("YDOTOOL_SOCKET"):
+        return
+    for raw in _YDOTOOL_SOCKET_DEFAULTS:
+        path = raw % os.getuid() if "%s" in raw else raw
+        if Path(path).exists():
+            os.environ["YDOTOOL_SOCKET"] = path
+            return
+
 
 # ydotool key codes (linux input-event-codes.h)
 KEY = {
@@ -51,7 +71,6 @@ _ATSPI_TO_AX = {
     "combo box": "AXComboBox",
     "spin button": "AXTextField",
     "editable text": "AXTextField",
-    "entry": "AXTextField",
 }
 
 _CDP_PORTS = (9222, 9223, 9229, 9333, 9888)
@@ -67,6 +86,34 @@ def _hypr(cmd: str) -> dict | list | str:
         return json.loads(out)
     except json.JSONDecodeError:
         return (out or "").strip()
+
+
+def _hypr_failed(result: subprocess.CompletedProcess[str]) -> bool:
+    blob = f"{result.stdout}\n{result.stderr}"
+    return result.returncode != 0 or "error:" in blob.lower()
+
+
+def _lua_quote(s: str) -> str:
+    return f"[[{s}]]" if "]]" not in s else json.dumps(s)
+
+
+def _dispatch(lua: str, *legacy: str) -> subprocess.CompletedProcess[str]:
+    """Hyprland 0.55+ Lua configs reject `hyprctl dispatch exec …`."""
+    result = _run(["hyprctl", "dispatch", lua], check=False)
+    if not _hypr_failed(result):
+        return result
+    if legacy:
+        return _run(["hyprctl", "dispatch", *legacy], check=False)
+    return result
+
+
+def _hypr_exec(command: str) -> subprocess.CompletedProcess[str]:
+    return _dispatch(f"hl.dsp.exec_cmd({_lua_quote(command)})", "exec", "--", command)
+
+
+def _hypr_focus_address(address: str) -> subprocess.CompletedProcess[str]:
+    sel = address if str(address).startswith("address:") else f"address:{address}"
+    return _dispatch(f'hl.dsp.focus({{window="{sel}"}})', "focuswindow", sel)
 
 
 def _have(bin_name: str) -> bool:
@@ -112,6 +159,7 @@ def accessibility_trusted() -> bool:
 
 def click_at(point: tuple[float, float]) -> None:
     x, y = int(point[0]), int(point[1])
+    _ensure_ydotool_socket()
     if not _have("ydotool"):
         raise RuntimeError("ydotool not installed (ydotoold must be running with uinput)")
     _run(["ydotool", "mousemove", "--absolute", "-x", str(x), "-y", str(y)])
@@ -121,6 +169,7 @@ def click_at(point: tuple[float, float]) -> None:
 
 def press(key: str, command: bool = False) -> None:
     """command=True → Ctrl (Linux stand-in for macOS Cmd: select-all, etc.)."""
+    _ensure_ydotool_socket()
     if not _have("ydotool"):
         raise RuntimeError("ydotool not installed")
     code = KEY.get(key)
@@ -146,6 +195,7 @@ def press(key: str, command: bool = False) -> None:
 
 
 def type_text(text: str) -> None:
+    _ensure_ydotool_socket()
     if _have("wtype"):
         _run(["wtype", "--", text])
         return
@@ -161,6 +211,7 @@ def clear_field() -> None:
 
 
 def scroll(lines: int) -> None:
+    _ensure_ydotool_socket()
     if not _have("ydotool"):
         raise RuntimeError("ydotool not installed")
     center = frontmost_window_center()
@@ -200,44 +251,96 @@ def frontmost_pid() -> int:
     return 0
 
 
-def activate(app: str, timeout: float = 3.0) -> bool:
+def frontmost_title() -> str:
+    info = frontmost_window_info()
+    return str(info.get("title") or "")
+
+
+def frontmost_address() -> str:
+    return str(frontmost_window_info().get("address") or "")
+
+
+def frontmost_window_info() -> dict:
+    """Hyprland active client: class, title, pid, address, at, size (screen points)."""
+    w = _hypr("activewindow")
+    if not isinstance(w, dict):
+        return {}
+    at = w.get("at") or [0, 0]
+    size = w.get("size") or [0, 0]
+    try:
+        x, y = float(at[0]), float(at[1])
+        ww, hh = float(size[0]), float(size[1])
+    except (TypeError, ValueError, IndexError):
+        x = y = ww = hh = 0.0
+    return {
+        "class": str(w.get("class") or w.get("initialClass") or ""),
+        "title": str(w.get("title") or ""),
+        "pid": int(w.get("pid") or 0),
+        "address": str(w.get("address") or ""),
+        "at": (x, y),
+        "size": (ww, hh),
+        "window": (x, y, ww, hh) if ww > 0 and hh > 0 else None,
+    }
+
+
+def window_targets(address: str | None = None):
+    """Clickable Hypruse nodes for a client address (focused window if omitted)."""
+    from .hypruse_ui import window_targets as _targets
+
+    return _targets(address or frontmost_address())
+
+
+def activate(app: str, timeout: float = 3.0, title_hint: str | None = None) -> bool:
     """Focus an already-open app/browser window; launch only if none exists.
 
     Browser names (`firefox`, `chrome`, `brave`, …) match Hyprland classes via
     the browser catalog so your real session (cookies/logins) is reused.
+    `title_hint` prefers a client whose title contains that substring (e.g. Slack vs Meet).
     """
     spec = browser_catalog.resolve(app)
     clients = _hypr("clients")
     if not isinstance(clients, list):
         clients = []
 
+    def _title_rank(client: dict) -> int:
+        if not title_hint:
+            return 0
+        title = str(client.get("title") or "").lower()
+        return 0 if title_hint.lower() in title else 1
+
     target = None
+    matches: list[dict] = []
     if spec is not None:
         for c in clients:
             klass = str(c.get("class") or c.get("initialClass") or "")
             title = str(c.get("title") or "")
             if browser_catalog.matches_client(spec, klass, title):
-                target = c
-                break
+                matches.append(c)
+        if matches:
+            matches.sort(key=_title_rank)
+            target = matches[0]
     if target is None:
         needle = app.lower()
+        fallback: list[dict] = []
         for c in clients:
             klass = str(c.get("class") or "")
             title = str(c.get("title") or "")
             if needle in klass.lower() or needle in title.lower() or klass.lower() == needle:
-                target = c
-                break
+                fallback.append(c)
+        if fallback:
+            fallback.sort(key=_title_rank)
+            target = fallback[0]
 
     if target is not None:
         addr = target.get("address")
         if addr:
-            _run(["hyprctl", "dispatch", "focuswindow", f"address:{addr}"], check=False)
+            _hypr_focus_address(str(addr))
     else:
         launch = browser_catalog.binary(spec) if spec else None
         launch = launch or (shutil.which(app) if shutil.which(app) else None)
         if not launch:
             return False
-        _run(["hyprctl", "dispatch", "exec", "--", launch], check=False)
+        _hypr_exec(shlex.quote(launch))
 
     end = time.monotonic() + timeout
     while time.monotonic() < end:
@@ -253,7 +356,7 @@ def activate(app: str, timeout: float = 3.0) -> bool:
     return app.lower() in front.lower()
 
 
-def open_url(browser: str, url: str) -> bool:
+def open_url(browser: str, url: str, title_hint: str | None = None) -> bool:
     """Open URL in your real browser profile.
 
     If that browser is already running, `exec browser url` reuses the same
@@ -261,17 +364,24 @@ def open_url(browser: str, url: str) -> bool:
     """
     spec = browser_catalog.resolve(browser)
     bin_path = browser_catalog.binary(spec) if spec else None
+    if title_hint is None:
+        host = url.split("//", 1)[-1].split("/", 1)[0]
+        title_hint = host.split(".")[0] if host else None
     if bin_path is None:
-        # last-resort: xdg-open (uses your default browser / portal)
-        _run(["hyprctl", "dispatch", "exec", "--", "xdg-open", url], check=False)
+        _hypr_exec(f"xdg-open {shlex.quote(url)}")
         time.sleep(0.6)
-        return activate(browser) or True
+        return activate(browser, title_hint=title_hint) or True
 
-    # Prefer focusing existing window first so the new tab lands in THAT profile.
-    activate(browser, timeout=1.5)
-    _run(["hyprctl", "dispatch", "exec", "--", bin_path, url], check=False)
+    activate(browser, timeout=1.5, title_hint=title_hint)
+    parts = [bin_path]
+    if spec is not None and spec.family == "firefox":
+        parts.append("--new-tab")
+    parts.append(url)
+    opened = _hypr_exec(" ".join(shlex.quote(p) for p in parts))
+    if _hypr_failed(opened):
+        return False
     time.sleep(0.5)
-    return activate(browser)
+    return activate(browser, title_hint=title_hint)
 
 
 def browser_url(browser: str) -> str | None:
@@ -302,8 +412,6 @@ def _cdp_active_url(browser: str) -> str | None:
 
     Start Chromium with --remote-debugging-port=9222 (or set CLICKER_CDP_PORT).
     """
-    import os
-
     ports: list[int] = []
     env_port = os.environ.get("CLICKER_CDP_PORT")
     if env_port and env_port.isdigit():
@@ -719,11 +827,13 @@ def platform_info() -> dict:
             atspi = True
         except Exception:
             atspi = False
+    _ensure_ydotool_socket()
     return {
         "platform": "hyprland",
         "hyprctl": _have("hyprctl"),
         "grim": _have("grim"),
         "ydotool": _have("ydotool"),
+        "ydotool_socket": os.environ.get("YDOTOOL_SOCKET"),
         "wtype": _have("wtype"),
         "tesseract": _have("tesseract"),
         "atspi": atspi,

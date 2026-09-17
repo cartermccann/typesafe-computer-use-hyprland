@@ -72,8 +72,8 @@ BROWSERS: tuple[Browser, ...] = (
     ),
     Browser(
         "zen",
-        ("zen", "zen-browser", "zen-alpha"),
-        ("zen", "zen-browser"),
+        ("zen", "zen-browser", "zen-alpha", "zen-beta", "zen-twilight"),
+        ("zen", "zen-browser", "zen-beta"),
         "firefox",
     ),
 )

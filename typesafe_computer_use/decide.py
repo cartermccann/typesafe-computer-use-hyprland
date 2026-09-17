@@ -25,8 +25,10 @@ def fixed_actions(browser: str, email: str | None) -> dict[str, str]:
             "address bar, a URL, or a search box to get there."
         ),
         "type_text": (
-            "Type free text into the focused text field. A writing model composes the text from the "
-            "goal and the field's label. Only valid when a text field is focused and needs content."
+            "Type the message or form value from the goal. Prefer this once the destination "
+            "conversation or form is open and the next step is writing. A writer composes the "
+            "text, or the explicit words in the goal are used (for example 'hi from jev'). "
+            "A focused-field report is often missing on Linux; still type if the composer is on screen."
         ),
         "press_enter": "Press Return to submit the focused form or field.",
         "press_escape": "Press Escape to dismiss a dialog, menu, or popup.",
@@ -50,33 +52,51 @@ def kind_criteria(browser: str, email: str | None) -> dict[str, str]:
 
 def item_criteria(screen: Screen, items: list[Item]) -> dict[str, str]:
     hints = date_hints(items, screen)
-    return {
-        str(it.index): f"{it.text!r} ({screen.region(it)}{'; ' + hints[it.index] if it.index in hints else ''})" for it in items
-    }
+    out = {}
+    for it in items:
+        bits = [screen.region(it)]
+        if it.index in hints:
+            bits.append(hints[it.index])
+        if it.role:
+            bits.append(it.role)
+        bits.append("clickable control" if it.clickable or it.from_ax else "visible text, not a known control")
+        out[str(it.index)] = f"{it.text!r} ({'; '.join(bits)})"
+    return out
 
 
 def site_criteria() -> dict[str, str]:
     return {**SITES, "none": "No website is needed."}
 
 
-def base_state(goal: str, screen: Screen, items: list[Item], history: list[str]) -> dict:
+def base_state(
+    goal: str,
+    screen: Screen,
+    items: list[Item],
+    history: list[str],
+    visible_text: list[str] | None = None,
+) -> dict:
     hints = date_hints(items, screen)
     return {
         "goal": goal,
         "now": now_context(),
         "frontmost_app": screen.app,
+        "window_title": screen.title,
         "browser_active_tab_url": screen.url,
         "focused_field": screen.field.summary() if screen.field else None,
         "previous_actions": history[-8:],
-        "screen_text_in_reading_order": [
+        "click_targets": [
             {
                 "i": it.index,
                 "text": it.text,
                 "where": screen.region(it),
+                "role": it.role or None,
+                "source": it.source,
+                "clickable": it.clickable or it.from_ax,
                 **({"when": hints[it.index]} if it.index in hints else {}),
             }
             for it in items
         ],
+        "visible_text": (visible_text or [it.text for it in items])[:80],
     }
 
 
@@ -104,14 +124,28 @@ class Decision:
 
 
 def decide(
-    client: TypeSafeClient, goal: str, screen: Screen, items: list[Item], history: list[str], browser: str, email: str | None
+    client: TypeSafeClient,
+    goal: str,
+    screen: Screen,
+    items: list[Item],
+    history: list[str],
+    browser: str,
+    email: str | None,
+    visible_text: list[str] | None = None,
 ) -> Decision:
     questions = {
         "kind": Choice(
             instructions=(
                 "You are driving this computer one action at a time. Which kind of action "
                 "makes the most progress toward the goal right now? Do not repeat an action "
-                "that was just taken unless the screen changed."
+                "that was just taken unless the screen changed. Prefer click_targets that "
+                "are clickable controls. Visible text is context, not a click list. "
+                "If window_title already shows the destination, do not keep clicking its name. "
+                "If window_title is a different person or channel than the goal, do not "
+                "type_text yet; open the right conversation first (New message, or their row). "
+                "After type_text of the intended message, press_enter to send. Do not type twice. "
+                "Never click Save, Deploy, Delete, Remove, or Revoke unless the goal explicitly "
+                "asks to write that change; prefer done and hand back what you found."
             ),
             criteria=kind_criteria(browser, email),
         ),
@@ -119,10 +153,17 @@ def decide(
     }
     if items:
         questions["item"] = Choice(
-            instructions="If clicking an on-screen item is the right move, which item?",
+            instructions=(
+                "If clicking an on-screen control is the right move, which click_target? "
+                "Prefer named buttons, tabs, and entries. Do not pick decorative chrome. "
+                "If the goal names a person, prefer their exact row (for example 'Active Josh Nolan') "
+                "over a group that merely contains that name."
+            ),
             criteria=item_criteria(screen, items),
         )
-    answers = client.system_one(state=base_state(goal, screen, items, history), questions=questions).answers
+    answers = client.system_one(
+        state=base_state(goal, screen, items, history, visible_text=visible_text), questions=questions
+    ).answers
     return Decision(kind=answers["kind"], item=answers.get("item"), site=answers["site"])
 
 

@@ -13,7 +13,7 @@ from . import config
 from .platform import load as _load_plat
 macos = _load_plat()
 from .actions import Context
-from .perception import capture, ocr
+from .perception import capture, perceive_with_context
 from .report import annotate, render_payload
 from .runner import RunConfig, run
 from .writer import make_writer
@@ -45,7 +45,7 @@ def main(argv: list[str] | None = None) -> None:
 
     _prepare()
     if args.act and not macos.accessibility_trusted():
-        sys.exit("this terminal lacks Accessibility permission; grant it in System Settings > Privacy & Security")
+        sys.exit("hyprctl/grim not available; this adapter needs a Hyprland session")
     writer = make_writer()
     if writer is None:
         print("writer disabled: no Anthropic credentials found; type_text and writer-proposed URLs need ANTHROPIC_API_KEY")
@@ -97,15 +97,22 @@ def inspect(argv: list[str] | None = None) -> None:
 
     browser = config.browser()
     screen = capture(browser=browser)
-    items = ocr(screen, config.MAX_OPTIONS, args.goal)
+    items, visible_text = perceive_with_context(screen, config.MAX_OPTIONS, args.goal)
     annotated = args.out / "annotated.png"
     text = args.out / "state.txt"
     screen.image.save(args.out / "raw.png")
     annotate(screen, items, chosen="", out=annotated)
-    text.write_text(render_payload(args.goal, screen, items, [], browser, config.email()))
+    text.write_text(render_payload(args.goal, screen, items, [], browser, config.email(), visible_text))
 
-    print(f"app={screen.app!r} url={screen.url!r} blocks={len(items)} field={screen.field.role if screen.field else None}")
+    print(
+        f"app={screen.app!r} title={screen.title!r} url={screen.url!r} "
+        f"targets={len(items)} field={screen.field.role if screen.field else None}"
+    )
     print(f"  {annotated}\n  {text}")
     if not args.no_open:
-        subprocess.run(["open", str(annotated)], check=False)
-        subprocess.run(["open", "-t", str(text)], check=False)
+        opener = "xdg-open" if sys.platform != "darwin" else "open"
+        subprocess.run([opener, str(annotated)], check=False)
+        if sys.platform == "darwin":
+            subprocess.run(["open", "-t", str(text)], check=False)
+        else:
+            subprocess.run([opener, str(text)], check=False)

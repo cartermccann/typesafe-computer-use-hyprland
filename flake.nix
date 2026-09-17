@@ -25,6 +25,7 @@
             ];
             shellHook = ''
               export CLICKER_PLATFORM=hyprland
+              export YDOTOOL_SOCKET="''${YDOTOOL_SOCKET:-/run/ydotoold/socket}"
               echo "CLICKER_PLATFORM=hyprland — uv sync --extra hyprland && uv run clicker \"…\""
             '';
           };

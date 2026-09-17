@@ -16,7 +16,7 @@ class Abort(Exception):
 
 @dataclass(frozen=True)
 class Item:
-    """One OCR block: merged text plus its pixel box on the capture."""
+    """One on-screen target: OCR text and/or an accessibility control."""
 
     index: int
     text: str
@@ -25,10 +25,17 @@ class Item:
     y1: float
     x2: float
     y2: float
+    role: str = ""
+    source: str = "ocr"  # ocr | ax | ax+ocr
+    clickable: bool = False
 
     @property
     def center(self) -> tuple[float, float]:
         return (self.x1 + self.x2) / 2, (self.y1 + self.y2) / 2
+
+    @property
+    def from_ax(self) -> bool:
+        return self.source.startswith("ax")
 
 
 @dataclass(frozen=True)
@@ -66,6 +73,9 @@ class Screen:
     app: str
     field: Field | None
     url: str | None
+    title: str = ""
+    window: tuple[float, float, float, float] | None = None  # x, y, w, h in screen points
+    address: str = ""
 
     def region(self, item: Item) -> str:
         cx, cy = item.center

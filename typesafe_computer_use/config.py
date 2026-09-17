@@ -24,7 +24,19 @@ SITES: dict[str, str] = {
     "notion": "https://www.notion.so/",
     "slack": "https://app.slack.com/",
     "typesafe_console": "https://console.typesafe.ai/",
+    "vercel": "https://vercel.com/dashboard",
+    "upstash": "https://console.upstash.com/",
 }
+
+# Clicks that write infrastructure. The loop stops for a confirm instead of pressing these cold.
+CONFIRM_CLICKS = (
+    "save",
+    "deploy",
+    "delete",
+    "remove",
+    "revoke",
+    "destroy",
+)
 
 
 def load_dotenv(path: Path) -> None:

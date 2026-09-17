@@ -12,13 +12,50 @@ from typesafe_sdk import TypeSafeClient
 from .platform import load as _load_plat
 macos = _load_plat()
 from .actions import Context, is_noop, perform
-from .config import DEFAULT_DELAY, DEFAULT_MIN_CONFIDENCE, DEFAULT_STEPS, MAX_OPTIONS
+from .config import CONFIRM_CLICKS, DEFAULT_DELAY, DEFAULT_MIN_CONFIDENCE, DEFAULT_STEPS, MAX_OPTIONS
 from .decide import decide
 from .models import Abort
-from .perception import capture, ocr
+from .perception import capture, perceive_with_context
 from .report import Log, annotate, render_payload, top
 
 MAX_CONSECUTIVE_NOOPS = 2
+
+
+def is_click_loop(history: list[str]) -> bool:
+    """Josh/DMs ping-pong: four clicks among two labels is not progress."""
+    if len(history) < 4:
+        return False
+    last4 = history[-4:]
+    if not all(h.startswith("clicked ") for h in last4):
+        return False
+    return len(set(last4)) <= 2
+
+
+def redact_action(what: str) -> str:
+    """Keep secrets out of run.json / the next Jev state."""
+    if not what.startswith("typed "):
+        return what
+    start = what.find("'")
+    end = what.find("'", start + 1) if start >= 0 else -1
+    payload = what[start + 1 : end] if start >= 0 and end > start else what[6:]
+    lower = payload.lower()
+    if (
+        len(payload) > 48
+        or "redis://" in lower
+        or "postgres://" in lower
+        or "mongodb://" in lower
+        or "sk-" in lower
+        or "upstash" in lower
+    ):
+        return "typed [redacted]"
+    return what
+
+
+def needs_write_confirm(what: str) -> bool:
+    if not what.startswith("clicked "):
+        return False
+    blob = what.lower()
+    return any(token in blob for token in CONFIRM_CLICKS)
 
 
 @dataclass
@@ -86,14 +123,16 @@ def run(cfg: RunConfig, ctx_factory) -> RunState:
 def run_step(cfg: RunConfig, ctx: Context, state: RunState, step: int, log: Log) -> bool:
     macos.check_abort()
     screen = capture(cfg.image, cfg.app, cfg.url, ctx.browser)
-    items = ocr(screen, MAX_OPTIONS, cfg.goal)
+    items, visible_text = perceive_with_context(screen, MAX_OPTIONS, cfg.goal)
     prefix = cfg.out / f"step-{step:02d}"
     screen.image.save(prefix.with_name(prefix.name + "-raw.png"))
     prefix.with_name(prefix.name + "-payload.txt").write_text(
-        render_payload(cfg.goal, screen, items, state.history, ctx.browser, ctx.email)
+        render_payload(cfg.goal, screen, items, state.history, ctx.browser, ctx.email, visible_text)
     )
 
-    decision = decide(ctx.typesafe, cfg.goal, screen, items, state.history, ctx.browser, ctx.email)
+    decision = decide(
+        ctx.typesafe, cfg.goal, screen, items, state.history, ctx.browser, ctx.email, visible_text=visible_text
+    )
     by_index = {str(it.index): it for it in items}
     annotate(screen, items, decision.chosen, prefix.with_suffix(".png"))
     prefix.with_name(prefix.name + "-answers.json").write_text(
@@ -112,6 +151,7 @@ def run_step(cfg: RunConfig, ctx: Context, state: RunState, step: int, log: Log)
                 "items": [asdict(it) for it in items],
                 "field": asdict(screen.field) if screen.field else None,
                 "app": screen.app,
+                "title": screen.title,
                 "url": screen.url,
             },
             indent=2,
@@ -120,8 +160,8 @@ def run_step(cfg: RunConfig, ctx: Context, state: RunState, step: int, log: Log)
 
     field_desc = f" field={screen.field.role}:{screen.field.label!r}" if screen.field else ""
     log(
-        f"\nstep {step}: app={screen.app!r}{field_desc} url={screen.url!r} items={len(items)} "
-        f"kind={decision.kind.choice} ({decision.kind.confidence:.2f}) site={decision.site.choice}"
+        f"\nstep {step}: app={screen.app!r} title={screen.title!r}{field_desc} url={screen.url!r} "
+        f"targets={len(items)} kind={decision.kind.choice} ({decision.kind.confidence:.2f}) site={decision.site.choice}"
     )
     for key, p in top(decision.kind, 4):
         log(f"  {p:5.2f}  {key}")
@@ -141,11 +181,20 @@ def run_step(cfg: RunConfig, ctx: Context, state: RunState, step: int, log: Log)
         log(f"  would do: {decision.chosen}. dry run (pass --act without --image to drive the machine)")
         return False
 
-    what = perform(decision, screen, items, ctx)
-    repeated = bool(state.history) and state.history[-1] == what and screen.url == state.last_url
+    what = redact_action(perform(decision, screen, items, ctx))
+    if needs_write_confirm(what):
+        log(f"  would write infrastructure ({what}); stopping for confirm")
+        state.history.append(what)
+        state.outcome = "needs_confirm"
+        return False
+    repeated = bool(state.history) and state.history[-1] == what
     state.last_url = screen.url
     state.history.append(what)
     log(f"  did: {what}")
+    if is_click_loop(state.history):
+        log("  click loop (same two labels); stopping")
+        state.outcome = "stalled"
+        return False
     if is_noop(what) or repeated:
         state.consecutive_noops += 1
         if state.consecutive_noops >= MAX_CONSECUTIVE_NOOPS:

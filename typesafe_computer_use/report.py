@@ -32,13 +32,21 @@ def top(answer, n: int = 5) -> list[tuple[str, float]]:
     return sorted(answer.probabilities.items(), key=lambda kv: -kv[1])[:n]
 
 
-def render_payload(goal: str, screen: Screen, items: list[Item], history: list[str], browser: str, email: str | None) -> str:
+def render_payload(
+    goal: str,
+    screen: Screen,
+    items: list[Item],
+    history: list[str],
+    browser: str,
+    email: str | None,
+    visible_text: list[str] | None = None,
+) -> str:
     """Exactly what goes to TypeSafe for this screen, plus a table of every OCR block."""
     parts = [
         RULE,
         "STATE  (sent as `state`)",
         RULE,
-        json.dumps(base_state(goal, screen, items, history), indent=2),
+        json.dumps(base_state(goal, screen, items, history, visible_text=visible_text), indent=2),
         "",
         RULE,
         "QUESTION kind  (Choice criteria)",
@@ -56,7 +64,7 @@ def render_payload(goal: str, screen: Screen, items: list[Item], history: list[s
         json.dumps(site_criteria(), indent=2),
         "",
         RULE,
-        f"OCR BLOCKS  ({len(items)} after merge/filter; pixel boxes on the {screen.image.width}x{screen.image.height} capture, scale {screen.scale:g})",
+        f"CLICK TARGETS  ({len(items)} after merge/filter; pixel boxes on the {screen.image.width}x{screen.image.height} capture, scale {screen.scale:g})",
         RULE,
     ]
     for it in items:

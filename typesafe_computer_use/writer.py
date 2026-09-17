@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from urllib.parse import urlparse
 
 import anthropic
@@ -40,6 +41,20 @@ def _structured(writer: anthropic.Anthropic, system: str, packet: dict, properti
         },
     )
     return json.loads("".join(b.text for b in response.content if b.type == "text"))
+
+
+def literal_text_from_goal(goal: str) -> str:
+    """Pull an explicit string to type when no writer model is configured."""
+    quoted = re.findall(r"[\"“](.+?)[\"”]", goal)
+    if quoted:
+        return quoted[-1].strip()
+    match = re.search(r"\b(?:message|dm|tell|text|say)\s+\S+\s+(.+)$", goal, re.I)
+    if match:
+        return match.group(1).strip().strip("'\"")
+    match = re.search(r"\btype\s+(.+)$", goal, re.I)
+    if match:
+        return match.group(1).strip().strip("'\"")
+    return ""
 
 
 def compose_text(writer: anthropic.Anthropic, goal: str, screen: Screen, items: list[Item], history: list[str]) -> str:

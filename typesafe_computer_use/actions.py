@@ -13,7 +13,7 @@ macos = _load_plat()  # noqa: N816 — keep name macos for minimal diff
 from .config import SITES
 from .decide import Decision, verify_typed
 from .models import Item, Screen
-from .writer import compose_text, compose_url
+from .writer import compose_text, compose_url, literal_text_from_goal
 
 VERIFY_THRESHOLD = 0.5
 NOOP_MARKERS = ("refused", "failed", "waited")
@@ -46,8 +46,18 @@ def perform(decision: Decision, screen: Screen, items: list[Item], ctx: Context)
     return handler(decision, screen, items, ctx)
 
 
+def _window_hint(goal: str, site: str | None = None) -> str | None:
+    if site and site not in {"none", ""}:
+        return site.replace("_", " ")
+    for token in ("slack", "github", "gmail", "linear", "notion", "calendar"):
+        if token in goal.lower():
+            return token
+    return None
+
+
 def _switch_to_browser(decision, screen, items, ctx: Context) -> str:
-    if macos.activate(ctx.browser):
+    hint = _window_hint(ctx.goal)
+    if macos.activate(ctx.browser, title_hint=hint):
         return f"activated {ctx.browser}"
     return f"switch_to_browser failed: {ctx.browser} did not come to the front"
 
@@ -56,7 +66,8 @@ def _open_site(decision: Decision, screen, items, ctx: Context) -> str:
     url = SITES.get(decision.site.choice) or (compose_url(ctx.writer, ctx.goal, ctx.history) if ctx.writer else "")
     if not url:
         return "open_site refused: no known site matches and no writer available to propose a URL"
-    if macos.open_url(ctx.browser, url):
+    hint = _window_hint(ctx.goal, decision.site.choice)
+    if macos.open_url(ctx.browser, url, title_hint=hint):
         return f"opened {url}"
     return f"open_site failed: opened {url} but {ctx.browser} did not come to the front"
 
@@ -69,20 +80,26 @@ def _type_email(decision, screen: Screen, items, ctx: Context) -> str:
 
 
 def _type_text(decision, screen: Screen, items, ctx: Context) -> str:
-    if not (screen.field and screen.field.is_text):
-        return "type_text refused: no text field is focused"
-    if ctx.writer is None:
-        return "type_text refused: no writer available"
-    text = compose_text(ctx.writer, ctx.goal, screen, items, ctx.history)
+    text = ""
+    if ctx.writer is not None:
+        text = compose_text(ctx.writer, ctx.goal, screen, items, ctx.history)
     if not text:
-        return "type_text refused: writer declined to fill this field"
+        text = literal_text_from_goal(ctx.goal)
+    if not text:
+        return "type_text refused: no writer available and no explicit text in the goal"
+    field = screen.field
+    linux = getattr(macos, "__name__", "").endswith("hyprland")
+    if not (field and field.is_text) and not linux:
+        return "type_text refused: no text field is focused"
     macos.type_text(text)
     time.sleep(0.3)
-    p = verify_typed(ctx.typesafe, ctx.goal, screen.field, text, macos.focused_field())
-    if p < VERIFY_THRESHOLD:
-        macos.clear_field()
-        return f"typed {text!r} into {screen.field.label!r} but verification failed ({p:.2f}); cleared it"
-    return f"typed {text!r} into {screen.field.label!r} (verified {p:.2f})"
+    if field and field.is_text:
+        p = verify_typed(ctx.typesafe, ctx.goal, field, text, macos.focused_field())
+        if p < VERIFY_THRESHOLD:
+            macos.clear_field()
+            return f"typed {text!r} into {field.label!r} but verification failed ({p:.2f}); cleared it"
+        return f"typed {text!r} into {field.label!r} (verified {p:.2f})"
+    return f"typed {text!r} (no focused-field check on this platform)"
 
 
 def _key(name: str, description: str):

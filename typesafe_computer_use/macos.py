@@ -103,7 +103,23 @@ def frontmost_pid() -> int:
     return int(osascript('tell application "System Events" to get unix id of first application process whose frontmost is true'))
 
 
-def activate(app: str, timeout: float = 3.0) -> bool:
+def frontmost_title() -> str:
+    return ""
+
+
+def frontmost_address() -> str:
+    return ""
+
+
+def frontmost_window_info() -> dict:
+    return {"class": frontmost_app(), "title": "", "pid": frontmost_pid(), "address": "", "window": None}
+
+
+def window_targets(address: str | None = None):
+    return []
+
+
+def activate(app: str, timeout: float = 3.0, title_hint: str | None = None) -> bool:
     """Bring an app to the front and confirm it got there."""
     osascript(f'tell application "{app}" to activate')
     end = time.monotonic() + timeout
@@ -116,7 +132,7 @@ def activate(app: str, timeout: float = 3.0) -> bool:
     return frontmost_app() == app
 
 
-def open_url(browser: str, url: str) -> bool:
+def open_url(browser: str, url: str, title_hint: str | None = None) -> bool:
     osascript(f'tell application "{browser}" to open location "{url}"')
     return activate(browser)
 

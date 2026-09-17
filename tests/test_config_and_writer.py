@@ -1,7 +1,7 @@
 import os
 
 from typesafe_computer_use.config import load_dotenv
-from typesafe_computer_use.writer import valid_url
+from typesafe_computer_use.writer import literal_text_from_goal, valid_url
 
 
 def test_dotenv_sets_only_missing_keys(tmp_path, monkeypatch):
@@ -15,6 +15,12 @@ def test_dotenv_sets_only_missing_keys(tmp_path, monkeypatch):
 
 def test_dotenv_missing_file_is_fine(tmp_path):
     load_dotenv(tmp_path / "nope.env")
+
+
+def test_literal_text_from_goal():
+    assert literal_text_from_goal("go to slack then message josh hi from jev") == "hi from jev"
+    assert literal_text_from_goal('open slack and type "hi from jev"') == "hi from jev"
+    assert literal_text_from_goal("just open slack") == ""
 
 
 def test_valid_url():
